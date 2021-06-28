@@ -275,6 +275,7 @@ endif
 
 # Libs
 PROJ_OBJ += libarm_math.a
+PROJ_OBJ += libonnx.a
 
 OBJ = $(FREERTOS_OBJ) $(PORT_OBJ) $(ST_OBJ) $(PROJ_OBJ) $(APP_OBJ) $(CRT0)
 
@@ -411,6 +412,9 @@ bin/vendor:
 
 libarm_math.a:
 	+$(MAKE) -C $(CRAZYFLIE_BASE)/tools/make/cmsis_dsp/ CRAZYFLIE_BASE=$(abspath $(CRAZYFLIE_BASE)) PROJ_ROOT=$(CURDIR) V=$(V) CROSS_COMPILE=$(CROSS_COMPILE)
+
+libonnx.a:
+	+$(MAKE) -C $(CRAZYFLIE_BASE)/vendor/libonnx CRAZYFLIE_BASE=$(abspath $(CRAZYFLIE_BASE)) PROJ_ROOT=$(CURDIR) V=$(V) CROSS_COMPILE=$(CROSS_COMPILE)
 
 clean_version:
 ifeq ($(SHELL),/bin/sh)
