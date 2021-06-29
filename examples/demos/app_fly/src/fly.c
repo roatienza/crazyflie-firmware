@@ -5,27 +5,25 @@
  * | / ,--´  |    / /_/ / / /_/ /__/ /  / /_/ / / /_/  __/
  *    +------`   /_____/_/\__/\___/_/   \__,_/ /___/\___/
  *
- * Crazyflie control firmware
+ * Crazyflie controlfirmware
  *
  * Copyright (C) 2021 Bitcraze AB
  *
- * This program is free software: you can redistribute it and/or modify
+ * This program isfree software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, in version 3.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * GNU General Public Licensefor more details.
  *
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  *
  *
- * wall_follower.c - App layer application of the wall following demo. The crazyflie
- * has to have the multiranger and the flowdeck version 2.
- *
- * The same wallfollowing strategy was used in the following paper:
+ * Modifiedfrom wall_follower.c
+ * Rowel Atienza Copyright 2021
  */
 
 #include <string.h>
@@ -47,12 +45,12 @@
 #include "param.h"
 #include "usec_time.h"
 
-/*#include "wallfollowing_multiranger_onboard.h"*/
+#include "policy.h"
 
 #define DEBUG_MODULE "FLYCONTROL"
 
 static void
-setVelocitySetpoint(setpoint_t * setpoint, float vx, float vy, float z, float yawrate)
+setVelocitySetpoint(setpoint_t * setpoint,float vx,float vy,float z,float yawrate)
 {
 	setpoint->mode.z = modeAbs;
 	setpoint->position.z = z;
@@ -73,38 +71,26 @@ typedef enum {
 	stopping
 }		StateOuterLoop;
 
-typedef enum {
-	forward,
-	hover,
-	turnToFindWall,
-	turnToAlignToWall,
-	forwardAlongWall,
-	rotateAroundWall,
-	rotateInCorner,
-	findCorner
-}		StateWF;
-
 StateOuterLoop	stateOuterLoop = idle;
-StateWF		stateInnerLoop = forward;
 
 /*
- * Thresholds for the unlocking procedure of the top sensor of the
+ * Thresholdsfor the unlocking procedure of the top sensor of the
  * multiranger
  */
 static const uint16_t unlockThLow = 100;
 static const uint16_t unlockThHigh = 300;
 static const uint16_t stoppedTh = 500;
 
-//Handling the height setpoint
+/* Handling the height setpoint */
 static const float spHeight = 0.5f;
 static const uint16_t radius = 300;
 
-//Some wallfollowing parameters and logging
-bool goLeft = false;
+/* Some wallfollowing parameters and logging */
+bool		goLeft =false;
 float		distanceToWall = 0.5f;
 float		maxForwardSpeed = 0.5f;
 
-float		cmdVelX = 0.0f ;
+float		cmdVelX = 0.0f;
 float		cmdVelY = 0.0f;
 float		cmdAngWRad = 0.0f;
 float		cmdAngWDeg = 0.0f;
@@ -115,12 +101,17 @@ float		cmdAngWDeg = 0.0f;
 void
 appMain()
 {
-	struct onnx_context_t *ctx;
+	/*struct onnx_context_t *ctx;
 
 	ctx = onnx_context_alloc_from_file("model.onnx", 0, 0);
 	if (ctx) {
 		onnx_context_free(ctx);
-	}
+	}*/
+
+    struct actor act;
+    alloc_actor_ctx(&act); 
+    free_actor_ctx(&act);
+
 	vTaskDelay(M2T(3000));
 	/* Getting Logging IDs of the multiranger */
 	logVarId_t	idUp = logGetVarId("range", "up");
@@ -137,15 +128,9 @@ appMain()
 	paramVarId_t	idPositioningDeck = paramGetVarId("deck", "bcFlow2");
 	paramVarId_t	idMultiranger = paramGetVarId("deck", "bcMultiranger");
 
-	/*
-	 * Initialize the wall follower state machine
-	 * wallFollowerInit(distanceToWall, maxForwardSpeed, stateInnerLoop);
-	 * 
-	 * Intialize the setpoint structure
-	 */
 	setpoint_t	setpoint;
 
-	DEBUG_PRINT("Waiting for activation ...\n");
+	DEBUG_PRINT("Waitingfor activation ...\n");
 
 	while (1) {
 		vTaskDelay(M2T(10));
@@ -155,7 +140,7 @@ appMain()
 		uint8_t		multirangerInit = paramGetUint(idMultiranger);
 
 		/*
-		 * Get the upper range sensor value(used for startup and
+		 * Get the upper range sensor value(usedfor startup and
 		 * stopping)
 		 */
 		uint16_t	up = logGetUint(idUp);
@@ -176,7 +161,7 @@ appMain()
 			if (goLeft) {
 				sideRange = (float)logGetUint(idRight) / 1000.0f;
 			} else {
-				sideRange = (float)logGetUint(idLeft) / 1000.0f + (float)backRange/100000.0f;
+				sideRange = (float)logGetUint(idLeft) / 1000.0f + (float)backRange / 100000.0f;
 			}
 
 			/* Get the heading and convert it to rad */
@@ -197,7 +182,7 @@ appMain()
 			 * reached a certain height
 			 */
 			if (heightEstimate > spHeight - 0.1f) {
-				/* Set the wall following direction */
+				/* Set the wallfollowing direction */
 				int		direction;
 				if (goLeft) {
 					direction = 1;
@@ -206,20 +191,15 @@ appMain()
 				}
 
 				/*
-				 * The wall - following state machine which
+				 * The wall -following state machine which
 				 * outputs velocity commands
 				 */
 				/*
-				 * float	timeNow = usecTimestamp() /
+				 *float	timeNow = usecTimestamp() /
 				 * 1e6;
 				 */
-				/*
-				 * stateInnerLoop = wallFollower(&cmdVelX,
-				 * &cmdVelY, &cmdAngWRad, frontRange,
-				 * sideRange, estYawRad, direction, timeNow);
-				 */
 				cmdAngWDeg = cmdAngWRad * 180.0f / (float)M_PI;
-				DEBUG_PRINT("direction: %d, estYawRad=%f, sideRange=%f, frontRange=%f\n", direction, (double)estYawRad, (double)sideRange, (double)frontRange);
+				DEBUG_PRINT("direction: %d, estYawRad=%f, sideRange=%f,frontRange=%f\n", direction, (double)estYawRad, (double)sideRange, (double)frontRange);
 			}
 			/*
 			 * Turn velocity commands into setpoints and send it
@@ -246,11 +226,11 @@ appMain()
 				DEBUG_PRINT("S\n");
 			}
 			/*
-			 * If the up multiranger is activated for the first
+			 * If the up multiranger is activatedfor thefirst
 			 * time, prepare to be unlocked
 			 */
 			if (up < unlockThLow && stateOuterLoop == idle && up > 0.001f) {
-				DEBUG_PRINT("Waiting for hand to be removed!\n");
+				DEBUG_PRINT("Waitingfor hand to be removed!\n");
 				stateOuterLoop = lowUnlock;
 			}
 			/*
@@ -279,6 +259,5 @@ LOG_GROUP_START(app)
 LOG_ADD(LOG_FLOAT, cmdVelX, &cmdVelX)
 LOG_ADD(LOG_FLOAT, cmdVelY, &cmdVelY)
 LOG_ADD(LOG_FLOAT, cmdAngWRad, &cmdAngWRad)
-LOG_ADD(LOG_UINT8, stateInnerLoop, &stateInnerLoop)
 LOG_ADD(LOG_UINT8, stateOuterLoop, &stateOuterLoop)
 LOG_GROUP_STOP(app)
