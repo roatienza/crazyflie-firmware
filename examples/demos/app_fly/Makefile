@@ -1,6 +1,6 @@
 # enable app support
 APP=1
-APP_STACKSIZE=300
+APP_STACKSIZE=1200
 
 VPATH += src/
 PROJ_OBJ += fly.o

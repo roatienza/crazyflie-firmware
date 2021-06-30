@@ -108,11 +108,7 @@ appMain()
 		onnx_context_free(ctx);
 	}*/
 
-    struct actor act;
-    alloc_actor_ctx(&act); 
-    free_actor_ctx(&act);
 
-	vTaskDelay(M2T(3000));
 	/* Getting Logging IDs of the multiranger */
 	logVarId_t	idUp = logGetVarId("range", "up");
 	logVarId_t	idLeft = logGetVarId("range", "left");
@@ -121,7 +117,7 @@ appMain()
 	logVarId_t	idBack = logGetVarId("range", "back");
 
 	/* Getting the Logging IDs of the state estimates */
-	logVarId_t	idStabilizerYaw = logGetVarId("stabilizer", "yaw");
+	/*logVarId_t	idStabilizerYaw = logGetVarId("stabilizer", "yaw");*/
 	logVarId_t	idHeightEstimate = logGetVarId("stateEstimate", "z");
 
 	/* Getting Param IDs of the deck driver initialization */
@@ -129,24 +125,68 @@ appMain()
 	paramVarId_t	idMultiranger = paramGetVarId("deck", "bcMultiranger");
 
 	setpoint_t	setpoint;
+	state_t		current_state;
 
-	DEBUG_PRINT("Waitingfor activation ...\n");
+
+
+	/* Check if decks are properly mounted */
+	uint8_t		positioningInit = paramGetUint(idPositioningDeck);
+	uint8_t		multirangerInit = paramGetUint(idMultiranger);
+	uint16_t	up = 0; //logGetUint(idUp);
+	float		heightEstimate = 0; // logGetFloat(idHeightEstimate);
+	float		frontRange = 0; //(float)logGetUint(idFront) / 1000.0f;
+	float		backRange = 0; //(float)logGetUint(idBack) / 1000.0f;
+	float		leftRange = 0; //(float)logGetUint(idLeft) / 1000.0f;
+	float       rightRange = 0; //(float)logGetUint(idRight) / 1000.0f;
+    float       state[] = {frontRange, leftRange, backRange, rightRange};
+	/*float		estYawDeg = logGetFloat(idStabilizerYaw);*/
+	/*float		estYawRad = estYawDeg * (float)M_PI / 180.0f;*/
+    uint16_t	up_o = 0; //radius - MIN(up, radius);
+	float		cmdHeight = 0; //spHeight - up_o / 1000.0f;
+
+    struct actor act;
+    alloc_actor_ctx(&act); 
+    if(act.ctx){
+        act.input = onnx_tensor_search(act.ctx, "input");
+        act.output = onnx_tensor_search(act.ctx, "output");
+    }else{
+        act.input = 0;
+        act.output = 0;
+    }
+    //free_actor_ctx(&act);
+	vTaskDelay(M2T(3000));
+	DEBUG_PRINT("Waiting for activation ...\n");
 
 	while (1) {
 		vTaskDelay(M2T(10));
-
-		/* Check if decks are properly mounted */
-		uint8_t		positioningInit = paramGetUint(idPositioningDeck);
-		uint8_t		multirangerInit = paramGetUint(idMultiranger);
 
 		/*
 		 * Get the upper range sensor value(usedfor startup and
 		 * stopping)
 		 */
-		uint16_t	up = logGetUint(idUp);
+		up = logGetUint(idUp);
 
 		/* Get Height estimate */
-		float		heightEstimate = logGetFloat(idHeightEstimate);
+		heightEstimate = logGetFloat(idHeightEstimate);
+
+		/* Get all multiranger values */
+		frontRange = (float)logGetUint(idFront) / 1000.0f;
+		backRange = (float)logGetUint(idBack) / 1000.0f;
+		leftRange = (float)logGetUint(idLeft) / 1000.0f;
+		rightRange = (float)logGetUint(idRight) / 1000.0f;
+        state[0] = frontRange;
+        state[1] = leftRange;
+        state[2] = backRange;
+        state[3] = rightRange;
+
+        DEBUG_PRINT("state:[%f, %f, %f, %f], height: %f\n", (double)state[0], (double)state[1], (double)state[2], (double)state[3], (double)heightEstimate);
+        if(act.input){
+            onnx_tensor_apply(act.input, (void *)state, sizeof(state));
+            onnx_run(act.ctx);
+            float* py = act.output->datas;
+            DEBUG_PRINT("acton:[%f, %f, %f]\n", (double)py[0], (double)py[1], (double)py[2]);
+        }
+
 
 		/*
 		 * If the crazyflie is unlocked by the hand, continue with
@@ -154,23 +194,13 @@ appMain()
 		 */
 		if (stateOuterLoop == unlocked) {
 
-			/* Get all multiranger values */
-			float		frontRange = (float)logGetUint(idFront) / 1000.0f;
-			float		backRange = (float)logGetUint(idBack) / 1000.0f;
-			float		sideRange;
-			if (goLeft) {
-				sideRange = (float)logGetUint(idRight) / 1000.0f;
-			} else {
-				sideRange = (float)logGetUint(idLeft) / 1000.0f + (float)backRange / 100000.0f;
-			}
-
 			/* Get the heading and convert it to rad */
-			float		estYawDeg = logGetFloat(idStabilizerYaw);
-			float		estYawRad = estYawDeg * (float)M_PI / 180.0f;
+			/*estYawDeg = logGetFloat(idStabilizerYaw);*/
+			/*estYawRad = estYawDeg * (float)M_PI / 180.0f;*/
 
 			/* Adjust height based on up ranger input */
-			uint16_t	up_o = radius - MIN(up, radius);
-			float		cmdHeight = spHeight - up_o / 1000.0f;
+			up_o = radius - MIN(up, radius);
+			cmdHeight = spHeight - up_o / 1000.0f;
 
 			cmdVelX = 0.0f;
 			cmdVelY = 0.0f;
@@ -182,24 +212,9 @@ appMain()
 			 * reached a certain height
 			 */
 			if (heightEstimate > spHeight - 0.1f) {
-				/* Set the wallfollowing direction */
-				int		direction;
-				if (goLeft) {
-					direction = 1;
-				} else {
-					direction = -1;
-				}
-
-				/*
-				 * The wall -following state machine which
-				 * outputs velocity commands
-				 */
-				/*
-				 *float	timeNow = usecTimestamp() /
-				 * 1e6;
-				 */
 				cmdAngWDeg = cmdAngWRad * 180.0f / (float)M_PI;
-				DEBUG_PRINT("direction: %d, estYawRad=%f, sideRange=%f,frontRange=%f\n", direction, (double)estYawRad, (double)sideRange, (double)frontRange);
+				/*DEBUG_PRINT("direction: %d, estYawRad=%f, sideRange=%f,frontRange=%f\n", direction, (double)estYawRad, (double)sideRange, (double)frontRange);
+                 */
 			}
 			/*
 			 * Turn velocity commands into setpoints and send it
@@ -208,9 +223,9 @@ appMain()
 			setVelocitySetpoint(&setpoint, cmdVelX, cmdVelY, cmdHeight, cmdAngWDeg);
 			commanderSetSetpoint(&setpoint, 3);
 
-			state_t		current_state;
 			commanderGetSetpoint(&setpoint, &current_state);
-			DEBUG_PRINT("heightEstimate: %f, cmdHeight: %f, GetHeight: %f...up=%f\n", (double)heightEstimate, (double)cmdHeight, (double)setpoint.position.z, (double)up);
+			/*DEBUG_PRINT("heightEstimate: %f, cmdHeight: %f, GetHeight: %f...up=%f\n", (double)heightEstimate, (double)cmdHeight, (double)setpoint.position.z, (double)up);
+            */
 
 			/* Handling stopping with hand above the crazyflie */
 			if (cmdHeight < spHeight - 0.2f) {
@@ -251,8 +266,6 @@ appMain()
 }
 
 PARAM_GROUP_START(app)
-PARAM_ADD(PARAM_UINT8, goLeft, &goLeft)
-PARAM_ADD(PARAM_FLOAT, distanceWall, &distanceToWall)
 PARAM_ADD(PARAM_FLOAT, maxSpeed, &maxForwardSpeed)
 PARAM_GROUP_STOP(app)
 LOG_GROUP_START(app)
