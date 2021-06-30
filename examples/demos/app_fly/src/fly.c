@@ -50,16 +50,27 @@
 #define DEBUG_MODULE "FLYCONTROL"
 
 static void
-setVelocitySetpoint(setpoint_t * setpoint,float vx,float vy,float z,float yawrate)
+setAbsoluteSetpoint(setpoint_t * setpoint,float x,float y,float z,float yaw)
 {
 	setpoint->mode.z = modeAbs;
 	setpoint->position.z = z;
+
+	/*setpoint->mode.yaw = modeAbs;
+    setpoint->attitude.yaw = yaw;
+
+	setpoint->mode.x = modeAbs;
+	setpoint->position.x = x;
+	setpoint->mode.y = modeAbs;
+	setpoint->position.y = y;
+    */
+
 	setpoint->mode.yaw = modeVelocity;
-	setpoint->attitudeRate.yaw = yawrate;
+	setpoint->attitudeRate.yaw = yaw;
+
 	setpoint->mode.x = modeVelocity;
 	setpoint->mode.y = modeVelocity;
-	setpoint->velocity.x = vx;
-	setpoint->velocity.y = vy;
+	setpoint->velocity.x = x;
+	setpoint->velocity.y = y;
 	setpoint->velocity_body = true;
 }
 
@@ -90,10 +101,10 @@ bool		goLeft =false;
 float		distanceToWall = 0.5f;
 float		maxForwardSpeed = 0.5f;
 
-float		cmdVelX = 0.0f;
-float		cmdVelY = 0.0f;
-float		cmdAngWRad = 0.0f;
-float		cmdAngWDeg = 0.0f;
+float		cmdX = 0.0f;
+float		cmdY = 0.0f;
+//float		cmdAngWRad = 0.0f;
+float		cmdAngDeg = 0.0f;
 
 #define MAX(a, b) ((a > b) ? a : b)
 #define MIN(a, b) ((a < b) ? a : b)
@@ -144,6 +155,7 @@ appMain()
     uint16_t	up_o = 0; //radius - MIN(up, radius);
 	float		cmdHeight = 0; //spHeight - up_o / 1000.0f;
 
+    float *py = 0;
     struct actor act;
     alloc_actor_ctx(&act); 
     if(act.ctx){
@@ -158,7 +170,7 @@ appMain()
 	DEBUG_PRINT("Waiting for activation ...\n");
 
 	while (1) {
-		vTaskDelay(M2T(10));
+		 vTaskDelay(M2T(10));
 
 		/*
 		 * Get the upper range sensor value(usedfor startup and
@@ -170,10 +182,11 @@ appMain()
 		heightEstimate = logGetFloat(idHeightEstimate);
 
 		/* Get all multiranger values */
-		frontRange = (float)logGetUint(idFront) / 1000.0f;
-		backRange = (float)logGetUint(idBack) / 1000.0f;
-		leftRange = (float)logGetUint(idLeft) / 1000.0f;
-		rightRange = (float)logGetUint(idRight) / 1000.0f;
+        float factor = 1000.0f;
+		frontRange = (float)logGetUint(idFront) / factor;
+		backRange = (float)logGetUint(idBack) / factor;
+		leftRange = (float)logGetUint(idLeft) / factor;
+		rightRange = (float)logGetUint(idRight) / factor;
         state[0] = frontRange;
         state[1] = leftRange;
         state[2] = backRange;
@@ -183,8 +196,10 @@ appMain()
         if(act.input){
             onnx_tensor_apply(act.input, (void *)state, sizeof(state));
             onnx_run(act.ctx);
-            float* py = act.output->datas;
+            py = act.output->datas;
             DEBUG_PRINT("acton:[%f, %f, %f]\n", (double)py[0], (double)py[1], (double)py[2]);
+        }else{
+            py = 0;
         }
 
 
@@ -202,35 +217,64 @@ appMain()
 			up_o = radius - MIN(up, radius);
 			cmdHeight = spHeight - up_o / 1000.0f;
 
-			cmdVelX = 0.0f;
-			cmdVelY = 0.0f;
-			cmdAngWRad = 0.0f;
-			cmdAngWDeg = 0.0f;
+			cmdX = 0.0f;
+			cmdY = 0.0f;
+			//cmdAngWRad = 0.0f;
+			cmdAngDeg = 0.0f;
 
 			/*
 			 * Only go to the state machine if the crazyflie has
 			 * reached a certain height
 			 */
-			if (heightEstimate > spHeight - 0.1f) {
-				cmdAngWDeg = cmdAngWRad * 180.0f / (float)M_PI;
+			if ((heightEstimate > spHeight - 0.1f) && py) {
+				//cmdAngDeg = cmdAngWRad * 180.0f / (float)M_PI;
+                //cmdAngDeg = 0;
 				/*DEBUG_PRINT("direction: %d, estYawRad=%f, sideRange=%f,frontRange=%f\n", direction, (double)estYawRad, (double)sideRange, (double)frontRange);
                  */
+                const float delta = 0.02f;
+                const float angle = 90.0f;
+                if(py[0] > py[1]){
+                    if(py[0] > py[2]){
+                        //left
+			            cmdAngDeg = angle;
+			            //cmdY = speed;
+                    }else{
+                        //fwd
+			            cmdX = delta;
+                    }
+                }else if(py[1] > py[2]){
+                    //right
+			        cmdAngDeg = -angle;
+			        //cmdY = -speed;
+                }else{
+                    //fwd
+			        cmdX = delta;
+                }
 			}
 			/*
 			 * Turn velocity commands into setpoints and send it
 			 * to the commander
 			 */
-			setVelocitySetpoint(&setpoint, cmdVelX, cmdVelY, cmdHeight, cmdAngWDeg);
+            setAbsoluteSetpoint(&setpoint, cmdX, cmdY, cmdHeight, cmdAngDeg);
+			//setAbsoluteSetpoint(&setpoint, cmdX, cmdY, cmdHeight, cmdAngDeg);
 			commanderSetSetpoint(&setpoint, 3);
 
 			commanderGetSetpoint(&setpoint, &current_state);
-			/*DEBUG_PRINT("heightEstimate: %f, cmdHeight: %f, GetHeight: %f...up=%f\n", (double)heightEstimate, (double)cmdHeight, (double)setpoint.position.z, (double)up);
-            */
+			DEBUG_PRINT("x: %f, yt: %f, yaw: %f\n", (double)current_state.position.x, (double)current_state.position.y, (double)current_state.attitude.yaw);
 
 			/* Handling stopping with hand above the crazyflie */
 			if (cmdHeight < spHeight - 0.2f) {
 				stateOuterLoop = stopping;
-				DEBUG_PRINT("X\n");
+				DEBUG_PRINT("Stopping....\n");
+			    cmdX = 0.0f;
+			    cmdY = 0.0f;
+			    cmdAngDeg = 0.0f;
+		        while( (double)(heightEstimate = logGetFloat(idHeightEstimate)) > 0.05 ){
+                    cmdHeight = heightEstimate - 0.1f;
+			        setAbsoluteSetpoint(&setpoint, cmdX, cmdY, cmdHeight, cmdAngDeg);
+			        commanderSetSetpoint(&setpoint, 3);
+		            vTaskDelay(M2T(10));
+                }
 			}
 		} else {
 
@@ -269,8 +313,8 @@ PARAM_GROUP_START(app)
 PARAM_ADD(PARAM_FLOAT, maxSpeed, &maxForwardSpeed)
 PARAM_GROUP_STOP(app)
 LOG_GROUP_START(app)
-LOG_ADD(LOG_FLOAT, cmdVelX, &cmdVelX)
-LOG_ADD(LOG_FLOAT, cmdVelY, &cmdVelY)
-LOG_ADD(LOG_FLOAT, cmdAngWRad, &cmdAngWRad)
+LOG_ADD(LOG_FLOAT, cmdX, &cmdX)
+LOG_ADD(LOG_FLOAT, cmdY, &cmdY)
+//LOG_ADD(LOG_FLOAT, cmdAngWRad, &cmdAngWRad)
 LOG_ADD(LOG_UINT8, stateOuterLoop, &stateOuterLoop)
 LOG_GROUP_STOP(app)
