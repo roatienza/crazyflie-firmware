@@ -46,32 +46,41 @@
 #include "usec_time.h"
 
 #include "policy.h"
+#include <sys/resource.h>
 
 #define DEBUG_MODULE "FLYCONTROL"
 
 static void
 setAbsoluteSetpoint(setpoint_t * setpoint,float x,float y,float z,float yaw)
 {
+    bool absolute = false;
 	setpoint->mode.z = modeAbs;
 	setpoint->position.z = z;
 
-	/*setpoint->mode.yaw = modeAbs;
-    setpoint->attitude.yaw = yaw;
-
-	setpoint->mode.x = modeAbs;
-	setpoint->position.x = x;
-	setpoint->mode.y = modeAbs;
-	setpoint->position.y = y;
+    /*setpoint->mode.roll = modeAbs;
+    setpoint->mode.pitch = modeAbs;
+    setpoint->attitude.roll = 0;
+    setpoint->attitude.pitch = 0;
     */
 
-	setpoint->mode.yaw = modeVelocity;
-	setpoint->attitudeRate.yaw = yaw;
+    if(absolute){
+	    setpoint->mode.yaw = modeAbs;
+        setpoint->attitude.yaw = yaw;
 
-	setpoint->mode.x = modeVelocity;
-	setpoint->mode.y = modeVelocity;
-	setpoint->velocity.x = x;
-	setpoint->velocity.y = y;
-	setpoint->velocity_body = true;
+	    setpoint->mode.x = modeAbs;
+	    setpoint->position.x = x;
+	    setpoint->mode.y = modeAbs;
+	    setpoint->position.y = y;
+    }else{
+	    setpoint->mode.yaw = modeVelocity;
+	    setpoint->attitudeRate.yaw = yaw;
+
+	    setpoint->mode.x = modeVelocity;
+	    setpoint->mode.y = modeVelocity;
+	    setpoint->velocity.x = x;
+	    setpoint->velocity.y = y;
+	    setpoint->velocity_body = true;
+    }
 }
 
 //States
@@ -96,15 +105,11 @@ static const uint16_t stoppedTh = 500;
 static const float spHeight = 0.5f;
 static const uint16_t radius = 300;
 
-/* Some wallfollowing parameters and logging */
-bool		goLeft =false;
-float		distanceToWall = 0.5f;
-float		maxForwardSpeed = 0.5f;
-
 float		cmdX = 0.0f;
 float		cmdY = 0.0f;
-//float		cmdAngWRad = 0.0f;
+float		cmdZ = 0.0f;
 float		cmdAngDeg = 0.0f;
+bool        desiredHeight = false;
 
 #define MAX(a, b) ((a > b) ? a : b)
 #define MIN(a, b) ((a < b) ? a : b)
@@ -112,15 +117,12 @@ float		cmdAngDeg = 0.0f;
 void
 appMain()
 {
-	/*struct onnx_context_t *ctx;
-
-	ctx = onnx_context_alloc_from_file("model.onnx", 0, 0);
-	if (ctx) {
-		onnx_context_free(ctx);
-	}*/
-
-
 	/* Getting Logging IDs of the multiranger */
+    DEBUG_PRINT("Start free heap: %d bytes\n", xPortGetFreeHeapSize());
+    HeapStats_t pxHeapStats;
+    vPortGetHeapStats( &pxHeapStats );
+    DEBUG_PRINT("Avail heap space: %d bytes\n", pxHeapStats.xAvailableHeapSpaceInBytes);
+    DEBUG_PRINT("Min free: %d bytes\n", pxHeapStats.xMinimumEverFreeBytesRemaining);
 	logVarId_t	idUp = logGetVarId("range", "up");
 	logVarId_t	idLeft = logGetVarId("range", "left");
 	logVarId_t	idRight = logGetVarId("range", "right");
@@ -136,24 +138,23 @@ appMain()
 	paramVarId_t	idMultiranger = paramGetVarId("deck", "bcMultiranger");
 
 	setpoint_t	setpoint;
-	state_t		current_state;
+	//state_t		current_state;
 
 
 
 	/* Check if decks are properly mounted */
 	uint8_t		positioningInit = paramGetUint(idPositioningDeck);
 	uint8_t		multirangerInit = paramGetUint(idMultiranger);
-	uint16_t	up = 0; //logGetUint(idUp);
-	float		heightEstimate = 0; // logGetFloat(idHeightEstimate);
-	float		frontRange = 0; //(float)logGetUint(idFront) / 1000.0f;
-	float		backRange = 0; //(float)logGetUint(idBack) / 1000.0f;
-	float		leftRange = 0; //(float)logGetUint(idLeft) / 1000.0f;
-	float       rightRange = 0; //(float)logGetUint(idRight) / 1000.0f;
+	uint16_t	up = 0;
+	float		heightEstimate = 0;
+	float		frontRange = 0;
+	float		backRange = 0;
+	float		leftRange = 0;
+	float       rightRange = 0;
     float       state[] = {frontRange, leftRange, backRange, rightRange};
 	/*float		estYawDeg = logGetFloat(idStabilizerYaw);*/
-	/*float		estYawRad = estYawDeg * (float)M_PI / 180.0f;*/
-    uint16_t	up_o = 0; //radius - MIN(up, radius);
-	float		cmdHeight = 0; //spHeight - up_o / 1000.0f;
+    uint16_t	up_o = 0;
+	float		cmdHeight = 0;
 
     float *py = 0;
     struct actor act;
@@ -165,13 +166,18 @@ appMain()
         act.input = 0;
         act.output = 0;
     }
-    //free_actor_ctx(&act);
 	vTaskDelay(M2T(3000));
+    //const int window = 3;
+    //const int state_len = sizeof(state)/sizeof(state[0]);
+    //float avg[state_len][window];
+    //int ci = 0;
 	DEBUG_PRINT("Waiting for activation ...\n");
 
 	while (1) {
+         //uint64_t timeStart = usecTimestamp();
 		 vTaskDelay(M2T(10));
-
+         //struct rusage memory;
+         //getrusage(RUSAGE_SELF, &memory);
 		/*
 		 * Get the upper range sensor value(usedfor startup and
 		 * stopping)
@@ -182,7 +188,7 @@ appMain()
 		heightEstimate = logGetFloat(idHeightEstimate);
 
 		/* Get all multiranger values */
-        float factor = 1000.0f;
+        const float factor = 1000.0f;
 		frontRange = (float)logGetUint(idFront) / factor;
 		backRange = (float)logGetUint(idBack) / factor;
 		leftRange = (float)logGetUint(idLeft) / factor;
@@ -191,16 +197,34 @@ appMain()
         state[1] = leftRange;
         state[2] = backRange;
         state[3] = rightRange;
+        //for(int i=0; i<state_len; i++){
+        //    avg[i][ci] = state[i];
+        //}
+        /*
+        ci += 1;
+        ci = ci % window;
+        float sum = 0.0f;
+        for(int i=0; i<state_len; i++){
+            sum = 0.0f;
+            for(int j=0; j<window; j++){
+                sum += avg[i][j];
+            }
+            sum /= window;
+            state[i] = sum;
+        }
+        */
 
-        DEBUG_PRINT("state:[%f, %f, %f, %f], height: %f\n", (double)state[0], (double)state[1], (double)state[2], (double)state[3], (double)heightEstimate);
+        //DEBUG_PRINT("state:[%f, %f, %f, %f], height: %f\n", (double)state[0], (double)state[1], (double)state[2], (double)state[3], (double)heightEstimate);
+        //uint64_t timeBeforeExec = usecTimestamp();
         if(act.input){
             onnx_tensor_apply(act.input, (void *)state, sizeof(state));
             onnx_run(act.ctx);
             py = act.output->datas;
-            DEBUG_PRINT("acton:[%f, %f, %f]\n", (double)py[0], (double)py[1], (double)py[2]);
+            //DEBUG_PRINT("acton:[%f, %f, %f]\n", (double)py[0], (double)py[1], (double)py[2]);
         }else{
             py = 0;
         }
+        //uint64_t timeAfterExec = usecTimestamp();
 
 
 		/*
@@ -208,36 +232,33 @@ appMain()
 		 * state machine
 		 */
 		if (stateOuterLoop == unlocked) {
-
 			/* Get the heading and convert it to rad */
 			/*estYawDeg = logGetFloat(idStabilizerYaw);*/
 			/*estYawRad = estYawDeg * (float)M_PI / 180.0f;*/
 
 			/* Adjust height based on up ranger input */
 			up_o = radius - MIN(up, radius);
-			cmdHeight = spHeight - up_o / 1000.0f;
+			cmdHeight = spHeight - up_o / factor;
 
 			cmdX = 0.0f;
 			cmdY = 0.0f;
-			//cmdAngWRad = 0.0f;
+			cmdZ = cmdHeight;
 			cmdAngDeg = 0.0f;
 
 			/*
 			 * Only go to the state machine if the crazyflie has
 			 * reached a certain height
 			 */
-			if ((heightEstimate > spHeight - 0.1f) && py) {
+			if ( (desiredHeight || (heightEstimate > spHeight - 0.1f)) && py) {
 				//cmdAngDeg = cmdAngWRad * 180.0f / (float)M_PI;
-                //cmdAngDeg = 0;
 				/*DEBUG_PRINT("direction: %d, estYawRad=%f, sideRange=%f,frontRange=%f\n", direction, (double)estYawRad, (double)sideRange, (double)frontRange);
                  */
-                const float delta = 0.02f;
+                const float delta = 0.01f;
                 const float angle = 90.0f;
                 if(py[0] > py[1]){
                     if(py[0] > py[2]){
                         //left
 			            cmdAngDeg = angle;
-			            //cmdY = speed;
                     }else{
                         //fwd
 			            cmdX = delta;
@@ -245,22 +266,31 @@ appMain()
                 }else if(py[1] > py[2]){
                     //right
 			        cmdAngDeg = -angle;
-			        //cmdY = -speed;
                 }else{
                     //fwd
 			        cmdX = delta;
                 }
+                desiredHeight = true;
 			}
 			/*
 			 * Turn velocity commands into setpoints and send it
 			 * to the commander
 			 */
-            setAbsoluteSetpoint(&setpoint, cmdX, cmdY, cmdHeight, cmdAngDeg);
-			//setAbsoluteSetpoint(&setpoint, cmdX, cmdY, cmdHeight, cmdAngDeg);
+            if(desiredHeight){
+                cmdZ = cmdHeight;
+            }
+            setAbsoluteSetpoint(&setpoint, cmdX, cmdY, cmdZ, cmdAngDeg);
 			commanderSetSetpoint(&setpoint, 3);
+            
+            //uint64_t timeDone = usecTimestamp();
 
-			commanderGetSetpoint(&setpoint, &current_state);
-			DEBUG_PRINT("x: %f, yt: %f, yaw: %f\n", (double)current_state.position.x, (double)current_state.position.y, (double)current_state.attitude.yaw);
+            //uint64_t execTime = (timeAfterExec - timeBeforeExec);
+            //uint64_t loopTime = (timeDone - timeStart);
+            //DEBUG_PRINT("execTime:%llu usec, loopTime: %llu usec\n", execTime, loopTime);
+            //DEBUG_PRINT("Runtime free heap: %d bytes\n", xPortGetFreeHeapSize());
+            //DEBUG_PRINT("%ld\n", memory.ru_ixrss);
+			//commanderGetSetpoint(&setpoint, &current_state);
+			//DEBUG_PRINT("x: %f, yt: %f, yaw: %f\n", (double)current_state.position.x, (double)current_state.position.y, (double)current_state.attitude.yaw);
 
 			/* Handling stopping with hand above the crazyflie */
 			if (cmdHeight < spHeight - 0.2f) {
@@ -275,6 +305,7 @@ appMain()
 			        commanderSetSetpoint(&setpoint, 3);
 		            vTaskDelay(M2T(10));
                 }
+                desiredHeight = false;
 			}
 		} else {
 
@@ -307,14 +338,13 @@ appMain()
 			}
 		}
 	}
+    free_actor_ctx(&act);
 }
 
 PARAM_GROUP_START(app)
-PARAM_ADD(PARAM_FLOAT, maxSpeed, &maxForwardSpeed)
 PARAM_GROUP_STOP(app)
 LOG_GROUP_START(app)
 LOG_ADD(LOG_FLOAT, cmdX, &cmdX)
 LOG_ADD(LOG_FLOAT, cmdY, &cmdY)
-//LOG_ADD(LOG_FLOAT, cmdAngWRad, &cmdAngWRad)
 LOG_ADD(LOG_UINT8, stateOuterLoop, &stateOuterLoop)
 LOG_GROUP_STOP(app)

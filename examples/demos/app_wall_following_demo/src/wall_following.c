@@ -111,6 +111,7 @@ float cmdAngWDeg = 0.0f;
 
 void appMain()
 {
+  DEBUG_PRINT("Start free heap: %d bytes\n", xPortGetFreeHeapSize());
   vTaskDelay(M2T(3000));
   // Getting Logging IDs of the multiranger
   logVarId_t idUp = logGetVarId("range", "up");
